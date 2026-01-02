@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dashboard Capacitaciones</title>
+  <style>
+    body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:16px; line-height:1.35;}
+    .card{border:1px solid #ddd; border-radius:12px; padding:14px; margin:12px 0;}
+    input, select{padding:10px; border:1px solid #ccc; border-radius:10px; width:100%;}
+    button{padding:10px 14px; border-radius:10px; border:1px solid #111; background:#111; color:#fff;}
+    table{width:100%; border-collapse:collapse; font-size:14px;}
+    th,td{border-bottom:1px solid #eee; padding:10px; text-align:left; vertical-align:top;}
+    th{background:#fafafa; position:sticky; top:0;}
+    .muted{color:#666; font-size:14px;}
+    .error{color:#b00020; white-space:pre-line;}
+    .row{display:flex; gap:10px; flex-wrap:wrap;}
+    .row > *{flex:1; min-width:180px;}
+  </style>
+</head>
+<body>
+  <h1>Dashboard</h1>
+  <div class="muted">Tablas + export CSV</div>
+  <div class="error" id="errors"></div>
+
+  <div class="card" id="loginCard">
+    <h2>Login</h2>
+    <form id="loginForm" class="row">
+      <div>
+        <label>Email</label>
+        <input name="email" type="email" required />
+      </div>
+      <div>
+        <label>Password</label>
+        <input name="password" type="password" required />
+      </div>
+      <div style="align-self:end;">
+        <button type="submit">Entrar</button>
+      </div>
+    </form>
+    <div class="muted" style="margin-top:8px;">Tip: el panel admin Django también está en <code>/admin</code>.</div>
+  </div>
+
+  <div class="card" id="filtersCard" hidden>
+    <h2>Filtros</h2>
+    <div class="row">
+      <div>
+        <label>Curso</label>
+        <select id="courseSelect"></select>
+      </div>
+      <div>
+        <label>Sede</label>
+        <select id="siteSelect"></select>
+      </div>
+      <div>
+        <label>Desde</label>
+        <input id="fromDate" type="date"/>
+      </div>
+      <div>
+        <label>Hasta</label>
+        <input id="toDate" type="date"/>
+      </div>
+      <div style="align-self:end;">
+        <button id="loadBtn" type="button">Cargar</button>
+      </div>
+      <div style="align-self:end;">
+        <button id="exportBtn" type="button">Export CSV</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="tableCard" hidden>
+    <h2>Resultados</h2>
+    <div class="muted" id="meta"></div>
+    <div style="overflow:auto; max-height:65vh;">
+      <table id="resultsTable">
+        <thead>
+          <tr>
+            <th>CURP</th><th>Nombre</th><th>Puesto</th><th>Sede</th>
+            <th>PRE</th><th>POST</th><th>Δ</th><th>Asistencia</th>
+            <th>Pre (fecha)</th><th>Post (fecha)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const API = "/api";
+  const $ = (id) => document.getElementById(id);
+  let authToken = null;
+  let lastRows = [];
+
+  function setError(msg){ $("errors").textContent = msg || ""; }
+
+  async function apiGet(path){
+    const res = await fetch(API + path, { headers: authToken ? { "Authorization": "Bearer " + authToken } : {} });
+    if(!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+  async function apiPost(path, body){
+    const res = await fetch(API + path, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", ...(authToken ? { "Authorization":"Bearer " + authToken } : {}) },
+      body: JSON.stringify(body)
+    });
+    if(!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  function fillSelect(sel, items){
+    sel.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "Todas";
+    sel.appendChild(all);
+    (items||[]).forEach(it => {
+      const opt = document.createElement("option");
+      opt.value = it.id;
+      opt.textContent = it.name;
+      sel.appendChild(opt);
+    });
+  }
+
+  function fmt(v){ return (v === null || v === undefined || v === "") ? "-" : String(v); }
+
+  function renderRows(rows){
+    const tb = $("resultsTable").querySelector("tbody");
+    tb.innerHTML = "";
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${fmt(r.curp)}</td>
+        <td>${fmt(r.name)}</td>
+        <td>${fmt(r.role)}</td>
+        <td>${fmt(r.site)}</td>
+        <td>${fmt(r.pre_score)}</td>
+        <td>${fmt(r.post_score)}</td>
+        <td>${fmt(r.delta)}</td>
+        <td>${r.assistance ? "Sí" : "No"}</td>
+        <td>${fmt(r.pre_at)}</td>
+        <td>${fmt(r.post_at)}</td>
+      `;
+      tb.appendChild(tr);
+    });
+    $("meta").textContent = `Filas: ${rows.length}`;
+  }
+
+  function toCSV(rows){
+    const headers = ["curp","name","role","site","pre_score","post_score","delta","assistance","pre_at","post_at"];
+    const esc = (val) => {
+      const s = (val === null || val === undefined) ? "" : String(val);
+      const need = /[",\n]/.test(s);
+      const out = s.replace(/"/g,'""');
+      return need ? `"${out}"` : out;
+    };
+    const lines = [];
+    lines.push(headers.join(","));
+    for(const r of rows){
+      lines.push(headers.map(h => esc(h === "assistance" ? (r.assistance ? "Sí" : "No") : r[h])).join(","));
+    }
+    return lines.join("\n");
+  }
+
+  function download(filename, content, mime){
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function loadCatalogs(){
+    const c = await apiGet("/admin/catalog/courses");
+    const s = await apiGet("/admin/catalog/sites");
+    fillSelect($("courseSelect"), c.courses);
+    fillSelect($("siteSelect"), s.sites);
+  }
+
+  $("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setError("");
+    try{
+      const fd = new FormData(e.target);
+      const r = await apiPost("/auth/login", { email: fd.get("email"), password: fd.get("password") });
+      authToken = r.token;
+      $("loginCard").hidden = true;
+      $("filtersCard").hidden = false;
+      $("tableCard").hidden = false;
+      await loadCatalogs();
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  $("loadBtn").addEventListener("click", async () => {
+    setError("");
+    try{
+      const course_id = $("courseSelect").value;
+      const site_id = $("siteSelect").value;
+      const from = $("fromDate").value;
+      const to = $("toDate").value;
+
+      const qs = new URLSearchParams();
+      if(course_id) qs.set("course_id", course_id);
+      if(site_id) qs.set("site_id", site_id);
+      if(from) qs.set("from", from);
+      if(to) qs.set("to", to);
+
+      const r = await apiGet("/admin/reports/results?" + qs.toString());
+      lastRows = r.rows || [];
+      renderRows(lastRows);
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  $("exportBtn").addEventListener("click", () => {
+    if(!lastRows.length){ setError("No hay datos para exportar. Primero carga un reporte."); return; }
+    const csv = toCSV(lastRows);
+    const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
+    download(`reporte_resultados_${ts}.csv`, csv, "text/csv;charset=utf-8");
+  });
+})();
+</script>
+</body>
+</html>

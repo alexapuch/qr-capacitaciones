@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Capacitación</title>
+  <style>
+    body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:16px; line-height:1.35;}
+    h1{margin:0 0 6px;}
+    .card{border:1px solid #ddd; border-radius:12px; padding:14px; margin:12px 0;}
+    label{display:block; margin:10px 0 6px;}
+    input[type="text"],
+input[type="email"],
+input[type="password"],
+select{
+  width:100%;
+  padding:10px;
+  border:1px solid #ccc;
+  border-radius:10px;
+}
+
+input[type="radio"],
+input[type="checkbox"]{
+  width:auto;
+}
+
+    button{padding:10px 14px; border-radius:10px; border:1px solid #111; background:#111; color:#fff;}
+    .muted{color:#666; font-size:14px;}
+    .error{color:#b00020; white-space:pre-line;}
+    .success{color:#0a7a2f; white-space:pre-line;}
+    .q{margin:12px 0; padding:10px; border:1px solid #eee; border-radius:10px;}
+    .opt{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin:8px 0;
+}
+/* --- FIX opciones radio/checkbox --- */
+.q label.opt{
+  display:flex !important;
+  align-items:flex-start !important;
+  gap:10px !important;
+  margin:8px 0 !important;
+}
+
+.q label.opt input[type="radio"],
+.q label.opt input[type="checkbox"]{
+  width:auto !important;
+  margin:2px 0 0 0 !important;
+}
+
+.q label.opt span{
+  flex:1 !important;
+}
+
+  </style>
+</head>
+<body>
+  <h1 id="courseTitle">Cargando…</h1>
+  <div class="muted" id="courseMeta"></div>
+  <div class="error" id="errors"></div>
+  <div class="success" id="success"></div>
+
+  <div class="card" id="registerCard" hidden>
+    <h2>Registro</h2>
+    <form id="registerForm">
+      <label>Nombre completo</label>
+      <input name="name" required maxlength="120"/>
+
+      <label>Puesto</label>
+      <input name="role" required maxlength="120"/>
+
+      <label>CURP</label>
+      <input name="curp" required maxlength="18" autocomplete="off"/>
+
+      <label>Sede</label>
+      <select name="site_id" id="siteSelect" required></select>
+
+      <label style="margin-top:12px;">
+        <input type="checkbox" name="privacy" required/>
+        Acepto el aviso de privacidad
+      </label>
+
+      <div style="margin-top:12px;">
+        <button type="submit">Continuar a evaluación</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card" id="pretestCard" hidden>
+    <h2>Evaluación diagnóstica (PRE)</h2>
+    <div class="muted">Responde todas las preguntas.</div>
+    <form id="pretestForm"></form>
+    <div style="margin-top:12px;">
+      <button id="submitPre" type="button">Enviar PRE</button>
+    </div>
+  </div>
+
+  <div class="card" id="identifyCard" hidden>
+    <h2>Identificación</h2>
+    <form id="identifyForm">
+      <label>CURP</label>
+      <input name="curp" required maxlength="18" autocomplete="off"/>
+      <div style="margin-top:12px;">
+        <button type="submit">Continuar a evaluación final</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card" id="posttestCard" hidden>
+    <h2>Evaluación final (POST)</h2>
+    <div class="muted">Responde todas las preguntas.</div>
+    <form id="posttestForm"></form>
+    <div style="margin-top:12px;">
+      <button id="submitPost" type="button">Enviar POST</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const API = "/api"; 
+  const $ = (id) => document.getElementById(id);
+
+  const state = { token:null, qr_type:null, course:null, sites:[], curp:null };
+
+  function setError(msg){ $("errors").textContent = msg || ""; }
+  function setSuccess(msg){ $("success").textContent = msg || ""; }
+
+  function getTokenFromURL(){
+    const u = new URL(window.location.href);
+    return u.searchParams.get("token");
+  }
+  function normalizeCurp(curp){ return (curp||"").trim().toUpperCase().replace(/\s+/g,""); }
+  function isValidCurp(curp){
+    const re = /^[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/;
+    return re.test(curp);
+  }
+
+  async function apiGet(path){
+    const res = await fetch(API + path, { method:"GET" });
+    if(!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+  async function apiPost(path, body){
+    const res = await fetch(API + path, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify(body)
+    });
+    if(!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  function renderSites(selectEl, sites, fixedSite){
+    selectEl.innerHTML = "";
+    if (fixedSite) {
+      const opt = document.createElement("option");
+      opt.value = fixedSite.id;
+      opt.textContent = fixedSite.name + " (fija)";
+      selectEl.appendChild(opt);
+      selectEl.disabled = true;
+      return;
+    }
+    const first = document.createElement("option");
+    first.value = "";
+    first.textContent = "Selecciona una sede…";
+    first.disabled = true;
+    first.selected = true;
+    selectEl.appendChild(first);
+
+    (sites||[]).forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.name;
+      selectEl.appendChild(opt);
+    });
+  }
+
+  function escapeHtml(str){
+    return (str || "").replace(/[&<>"']/g, (m) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[m]));
+  }
+
+  function renderQuestions(formEl, questions){
+    formEl.innerHTML = "";
+    (questions||[]).forEach((q, idx) => {
+      const wrap = document.createElement("div");
+      wrap.className = "q";
+      wrap.dataset.qid = q.id;
+
+      const title = document.createElement("div");
+      title.innerHTML = `<strong>${idx+1})</strong> ${escapeHtml(q.text)}`;
+      wrap.appendChild(title);
+
+      (q.options||[]).forEach(opt => {
+        const line = document.createElement("label");
+        line.className = "opt";
+        line.innerHTML = `
+          <input type="radio" name="q_${q.id}" value="${opt.id}" required />
+          <span>${escapeHtml(opt.text)}</span>
+        `;
+        wrap.appendChild(line);
+      });
+
+      formEl.appendChild(wrap);
+    });
+  }
+
+  function collectAnswers(formEl){
+    const answers = [];
+    const qBlocks = formEl.querySelectorAll(".q");
+    for (const qb of qBlocks){
+      const qid = qb.dataset.qid;
+      const checked = formEl.querySelector(`input[name="q_${qid}"]:checked`);
+      if(!checked) return null;
+      answers.push({ question_id: qid, option_id: checked.value });
+    }
+    return answers;
+  }
+
+  async function init(){
+    try{
+      state.token = getTokenFromURL();
+      if(!state.token){
+        $("courseTitle").textContent = "Falta token";
+        setError("Esta liga no tiene token. Escanea el QR nuevamente.");
+        return;
+      }
+      const info = await apiGet(`/public/qr/resolve?token=${encodeURIComponent(state.token)}`);
+      state.qr_type = info.qr_type;
+      $("courseTitle").textContent = info.course?.name || "Capacitación";
+      $("courseMeta").textContent = `Tipo: ${state.qr_type}`;
+      if(state.qr_type === "PRE"){
+        $("registerCard").hidden = false;
+        renderSites($("siteSelect"), info.sites, info.site_fixed);
+      } else if(state.qr_type === "POST"){
+        $("identifyCard").hidden = false;
+      } else {
+        throw new Error("QR inválido");
+      }
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  }
+
+  $("registerForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setError(""); setSuccess("");
+    const fd = new FormData(e.target);
+    const curp = normalizeCurp(fd.get("curp"));
+    if(!isValidCurp(curp)){ setError("CURP inválida."); return; }
+
+    try{
+      await apiPost("/public/register", {
+        token: state.token,
+        name: (fd.get("name")||"").trim(),
+        role: (fd.get("role")||"").trim(),
+        curp,
+        site_id: fd.get("site_id")
+      });
+      state.curp = curp;
+      $("registerCard").hidden = true;
+      const test = await apiGet(`/public/pretest?token=${encodeURIComponent(state.token)}`);
+      renderQuestions($("pretestForm"), test.questions);
+      $("pretestCard").hidden = false;
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  $("submitPre").addEventListener("click", async () => {
+    setError(""); setSuccess("");
+    try{
+      const answers = collectAnswers($("pretestForm"));
+      if(!answers){ setError("Responde todas las preguntas."); return; }
+      const r = await apiPost("/public/pretest/submit", { token: state.token, curp: state.curp, answers });
+      setSuccess(`PRE registrado. Calificación: ${r.score}% (${r.correct_count}/${r.total}).`);
+      $("pretestCard").hidden = true;
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  $("identifyForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setError(""); setSuccess("");
+    const fd = new FormData(e.target);
+    const curp = normalizeCurp(fd.get("curp"));
+    if(!isValidCurp(curp)){ setError("CURP inválida."); return; }
+
+    try{
+      await apiPost("/public/identify", { token: state.token, curp });
+      state.curp = curp;
+      $("identifyCard").hidden = true;
+      const test = await apiGet(`/public/posttest?token=${encodeURIComponent(state.token)}`);
+      renderQuestions($("posttestForm"), test.questions);
+      $("posttestCard").hidden = false;
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  $("submitPost").addEventListener("click", async () => {
+    setError(""); setSuccess("");
+    try{
+      const answers = collectAnswers($("posttestForm"));
+      if(!answers){ setError("Responde todas las preguntas."); return; }
+      const r = await apiPost("/public/posttest/submit", { token: state.token, curp: state.curp, answers });
+      setSuccess(`POST registrado. Calificación: ${r.score}% (${r.correct_count}/${r.total}).`);
+      $("posttestCard").hidden = true;
+    }catch(err){
+      setError("Error: " + (err.message || err));
+    }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
